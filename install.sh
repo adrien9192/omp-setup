@@ -135,10 +135,11 @@ cat > "$CONFIG" <<YAML
 tools:
   # "yolo" auto-approves reads, writes AND shell execution, and bypasses omp's
   # own hard-coded guardrails (rm -rf /, fork bombs, fetch-then-execute).
-  # Chosen deliberately here. What contains it is the subagent isolation below
-  # plus the advisor: delegated work happens in a throwaway clone and is read by
-  # a second model. The main turn is NOT isolated — it writes to the real tree.
-  # Run OMP_APPROVAL_MODE=write bash install.sh to be prompted before shell.
+  # Chosen deliberately here. Delegated work is contained by the subagent
+  # isolation below. The main turn is not — no omp setting isolates it — so this
+  # installer also ships \`ompw\`, which runs it inside a disposable git worktree.
+  # Use ompw instead of omp in a repository, or run
+  # OMP_APPROVAL_MODE=write bash install.sh to be prompted before shell.
   approvalMode: $OMP_APPROVAL_MODE
   # Deliberately no per-tool \`approval\` rules. A {bash: prompt} rule does not
   # block execution, it relocates it: refused on the bash tool, the model reran
@@ -271,7 +272,31 @@ check task.isolation.mode     "$ISOLATION"
 
 [ "$FAILURES" -eq 0 ] || die "$FAILURES setting(s) did not apply. Do not run omp on a client repository until this is fixed."
 
-# ─── 5. What is left for a human ─────────────────────────────────────────────
+# ─── 4b. ompw ────────────────────────────────────────────────────────────────
+# omp isolates the subagents it delegates to, but nothing isolates the MAIN
+# turn: it always writes to the directory you launched from. In yolo that turn
+# is also the one issuing the most shell commands, so the agent with the widest
+# blast radius is the only one with no containment. There is no setting for it
+# (checked: task.isolation covers delegated work only, --cwd just moves the
+# start directory). ompw closes it from the outside: a worktree and a branch of
+# its own, a diff when it exits, a merge only if you say so.
+step "5. ompw"
+if [ -f "$(dirname "$0")/ompw.sh" ]; then
+  mkdir -p "$HOME/.omp"
+  cp "$(dirname "$0")/ompw.sh" "$HOME/.omp/ompw.sh"
+  chmod +x "$HOME/.omp/ompw.sh"
+  for rc in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.bash_profile"; do
+    [ -f "$rc" ] || continue
+    grep -q 'omp/ompw.sh' "$rc" && continue
+    printf '\n# omp: run the main turn inside a disposable git worktree\n[ -f "$HOME/.omp/ompw.sh" ] && . "$HOME/.omp/ompw.sh"\n' >> "$rc"
+    info "Sourced from ${rc/#$HOME/~}"
+  done
+  info "ompw installed. Use 'ompw' instead of 'omp' inside a git repository."
+else
+  info "ompw.sh not found next to this script, skipping."
+fi
+
+# ─── 6. What is left for a human ─────────────────────────────────────────────
 if [ "$OMP_APPROVAL_MODE" = "yolo" ]; then
   printf '\n\033[33m%s\033[0m\n' "Approval mode is yolo. Read this once."
   cat <<'WARN'

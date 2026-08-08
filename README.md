@@ -7,9 +7,10 @@ one's work while it codes.
 > **This installs omp in `yolo` mode: nothing you ask it to do gets validated
 > first.** That is deliberate — approving every shell command is what makes
 > people abandon the tool, and it is what omp ships by default anyway. What
-> contains it here is subagent isolation: delegated work happens in a throwaway
-> clone. Run `OMP_APPROVAL_MODE=write bash install.sh` if you want to be prompted
-> before shell commands. Details below.
+> contains it: delegated work runs in a throwaway clone, and `ompw` (shipped
+> here) puts the main turn in a disposable git worktree too. Run
+> `OMP_APPROVAL_MODE=write bash install.sh` if you want to be prompted before
+> shell commands instead. Details below.
 
 The factory defaults are not the ones you want on a client repository. Three of
 them act from the very first session, so the configuration has to be in place
@@ -80,6 +81,7 @@ tokens if it does not share the first one's blind spots.
 | `task.agentModelOverrides` | empty | 7 agents mapped | Without it every subagent 404s on a retired model and burns a full round trip before recovering. |
 | `marketplace.autoUpdate` | — | `notify` | Plugin code runs in-process, with no sandbox. |
 | `retry.usageAwareFallback` | `false` | `true` | Without it, running out of quota is silent: the advisor dies, the run continues, and you believe you are still supervised. |
+| main-turn isolation | none, and no setting for it | `ompw` | A shell function shipped here: worktree, branch, diff on exit, merge on your word. |
 
 No per-tool `approval` rules, deliberately. A `{bash: prompt}` rule does not
 block execution — measured, it relocates it to the Python kernel, which
@@ -108,10 +110,17 @@ Approving every shell command is the friction that makes people stop using an
 agent, so the trade is made once, up front, rather than fifty times a day.
 
 Know exactly what it trades. Delegated subagents are contained: they work in a
-copy-on-write clone and only their diff comes back. **The main turn is not
-isolated** — its shell commands run against your real working tree with omp's
-hard-coded guardrails bypassed. The advisor reviews that main turn, and only it:
-extending it to subagents is what costs a weekly quota (PITFALLS #8).
+copy-on-write clone and only their diff comes back. **omp has no setting that
+isolates the main turn** — checked: `task.isolation` covers delegated work only,
+`--cwd` just moves the start directory. So the agent issuing the most shell
+commands was the one with no containment at all.
+
+`ompw`, installed alongside, closes that from the outside: it creates a git
+worktree and a branch, runs omp there, shows you the diff when it exits, and
+merges only if you say so. Use `ompw` instead of `omp` inside a repository.
+
+The advisor reviews the main turn, and only it: extending it to subagents is
+what costs a weekly quota (PITFALLS #8).
 
 So: keep your work committed, and prefer `OMP_APPROVAL_MODE=write` on a
 repository whose loss would actually hurt. Switching later needs no reinstall:
