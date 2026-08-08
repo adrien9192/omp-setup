@@ -4,6 +4,13 @@ Install [omp](https://omp.sh) (Oh My Pi) with a configuration that works on the
 first try, and with a second model from a different vendor reviewing the first
 one's work while it codes.
 
+> **This installs omp in `yolo` mode: nothing you ask it to do gets validated
+> first.** That is deliberate — approving every shell command is what makes
+> people abandon the tool, and it is what omp ships by default anyway. What
+> contains it here is subagent isolation plus a reviewing model, both set up for
+> you. Run `OMP_APPROVAL_MODE=write bash install.sh` if you want to be prompted
+> before shell commands. Details below.
+
 The factory defaults are not the ones you want on a client repository. Three of
 them act from the very first session, so the configuration has to be in place
 **before** you launch. That is why this is an installer and not a checklist.
@@ -30,6 +37,9 @@ Steps, in order:
 
 Then tell me the two /login commands it printed at the end. Do not try to run
 them yourself: OAuth is a browser flow and cannot be scripted.
+
+Finally, relay the yolo warning the installer prints, verbatim, so I know what
+was installed. Do not summarise it away.
 ```
 
 Or, without an agent:
@@ -61,7 +71,7 @@ tokens if it does not share the first one's blind spots.
 
 | Setting | Factory | Here | Why |
 |---|---|---|---|
-| `tools.approvalMode` | `yolo` | `write` | `yolo` auto-approves shell execution *and* disables omp's own hard-coded guardrails (`rm -rf /`, fork bombs, fetch-then-execute). |
+| `tools.approvalMode` | `yolo` | `yolo` | Kept. Nothing is validated, and omp's hard-coded guardrails (`rm -rf /`, fork bombs, fetch-then-execute) are bypassed. The isolation and advisor rows below are what make that survivable. |
 | `dev.autoqa` | `true` | `false` | Posts model-written free-text reports to `qa.omp.sh`; the payload can carry paths and code fragments. |
 | `secrets.enabled` | `false` | `true` | Masks sensitive env vars and token patterns before the prompt reaches the provider. |
 | `advisor.enabled` | `false` | `true` | The feature with no equivalent elsewhere: a second model reads the first one's diffs and reasoning as it works, and can interrupt. |
@@ -81,7 +91,7 @@ executes the same command unvalidated. See [PITFALLS.md](PITFALLS.md#5).
 Override any of these on the command line:
 
 ```bash
-OMP_APPROVAL_MODE=yolo OMP_EFFORT=max bash install.sh
+OMP_APPROVAL_MODE=write OMP_EFFORT=max bash install.sh
 ```
 
 | Variable | Default | Notes |
@@ -90,12 +100,23 @@ OMP_APPROVAL_MODE=yolo OMP_EFFORT=max bash install.sh
 | `OMP_ADVISOR` | `openai-codex/gpt-5.6-sol` | The reviewer. Set empty to run single-model. |
 | `OMP_CHEAP` | `anthropic/claude-haiku-4-5` | Commits, summaries, read-only exploration. |
 | `OMP_EFFORT` | `high` | `low`…`max`. Applies to every turn, including trivial ones — it burns subscription quota fast. |
-| `OMP_APPROVAL_MODE` | `write` | `always-ask`, `write`, or `yolo`. |
+| `OMP_APPROVAL_MODE` | `yolo` | `always-ask`, `write`, or `yolo`. |
 
-**On `yolo`:** it is a real choice, not a mistake, if you accept that the
-advisor becomes your only remaining control. Pair it with the isolation this
-installer already sets, so a runaway agent damages a disposable clone rather
-than your tree.
+**On `yolo`, which is the default here:** it is a real choice, not an oversight.
+Approving every shell command is the friction that makes people stop using an
+agent, so the trade is made once, up front, rather than fifty times a day.
+
+Know exactly what it trades. Delegated subagents are contained: they work in a
+copy-on-write clone, only their diff comes back, and a second model reads those
+diffs as they are produced. **The main turn has neither.** Its shell commands
+run against your real working tree with omp's hard-coded guardrails bypassed.
+
+So: keep your work committed, and prefer `OMP_APPROVAL_MODE=write` on a
+repository whose loss would actually hurt. Switching later needs no reinstall:
+
+```bash
+omp config set tools.approvalMode write
+```
 
 **On `max`:** more reasoning budget helps on hard problems, and costs on every
 turn that is not one. Watch your weekly quota rather than the clock.

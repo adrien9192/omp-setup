@@ -30,10 +30,13 @@ OMP_CHEAP="${OMP_CHEAP:-anthropic/claude-haiku-4-5}"
 OMP_EFFORT="${OMP_EFFORT:-high}"
 
 # always-ask | write | yolo.
-#   write = auto-approves reads and writes, prompts before shell execution.
-#   yolo  = approves everything AND disables omp's own hard-coded guardrails
-#           (rm -rf /, fork bombs, fetch-then-execute). Deliberate choice only.
-OMP_APPROVAL_MODE="${OMP_APPROVAL_MODE:-write}"
+#   yolo       = nothing is ever validated. This is the default here, on
+#                purpose: the friction of approving every shell command is what
+#                makes people stop using the tool. It is also what omp itself
+#                ships. The installer prints what it means before finishing.
+#   write      = auto-approves reads and writes, prompts before shell execution.
+#   always-ask = prompts for everything.
+OMP_APPROVAL_MODE="${OMP_APPROVAL_MODE:-yolo}"
 
 BUN_MIN="1.3.14"
 OMP_MIN="17.2.11"   # 17.2.10 cannot resolve a model at all. See PITFALLS #4.
@@ -130,8 +133,12 @@ cat > "$CONFIG" <<YAML
 # Reasons: https://github.com/adrien9192/omp-setup/blob/main/PITFALLS.md
 
 tools:
-  # FACTORY DEFAULT: "yolo" — reads, writes AND shell execution auto-approved,
-  # and in yolo omp explicitly bypasses its own hard-coded guardrails.
+  # "yolo" auto-approves reads, writes AND shell execution, and bypasses omp's
+  # own hard-coded guardrails (rm -rf /, fork bombs, fetch-then-execute).
+  # Chosen deliberately here. What contains it is the subagent isolation below
+  # plus the advisor: delegated work happens in a throwaway clone and is read by
+  # a second model. The main turn is NOT isolated — it writes to the real tree.
+  # Run OMP_APPROVAL_MODE=write bash install.sh to be prompted before shell.
   approvalMode: $OMP_APPROVAL_MODE
   # Deliberately no per-tool \`approval\` rules. A {bash: prompt} rule does not
   # block execution, it relocates it: refused on the bash tool, the model reran
@@ -246,6 +253,24 @@ check task.isolation.mode     "$ISOLATION"
 [ "$FAILURES" -eq 0 ] || die "$FAILURES setting(s) did not apply. Do not run omp on a client repository until this is fixed."
 
 # ─── 5. What is left for a human ─────────────────────────────────────────────
+if [ "$OMP_APPROVAL_MODE" = "yolo" ]; then
+  printf '\n\033[33m%s\033[0m\n' "Approval mode is yolo. Read this once."
+  cat <<'WARN'
+  Nothing will be validated. Shell commands from the main turn run against your
+  real working tree, and omp's hard-coded guardrails (rm -rf /, fork bombs,
+  fetch-then-execute) are bypassed in this mode.
+
+  What contains it: delegated subagents work in a throwaway copy-on-write clone
+  and only their diff is merged back, and a second model reads their diffs as
+  they go. The main turn has neither. Keep your work committed.
+
+  To be prompted before shell instead:
+    OMP_APPROVAL_MODE=write bash install.sh
+  Or later, without reinstalling:
+    omp config set tools.approvalMode write
+WARN
+fi
+
 step "Left to do, once"
 cat <<FIN
   Login is a browser OAuth flow and cannot be scripted:
