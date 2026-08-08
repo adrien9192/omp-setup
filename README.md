@@ -178,6 +178,19 @@ anything wide.
 
 ---
 
+## The lever that beats the harness
+
+Measured on 2026-08-08: two harnesses audited the same commit. One returned 17
+findings for 21M tokens. Ten agents carrying an explicit output contract
+returned ~70 for 1.7M — 8% of the cost, five times the findings, same models on
+both sides.
+
+The delta was not the harness. It was what each agent was asked to return.
+[FINDINGS-CONTRACT.md](FINDINGS-CONTRACT.md) is those six clauses, ready to
+paste into any subagent prompt.
+
+---
+
 ## Requirements
 
 macOS or Linux, `curl`, and `git`. bun is installed for you if missing.
