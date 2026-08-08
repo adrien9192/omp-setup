@@ -1,0 +1,254 @@
+# Measured pitfalls
+
+Every entry below was hit on a real machine, diagnosed, and fixed. Each one
+names the symptom you will actually see, the cause, and the fix `install.sh`
+applies. Measurements dated 2026-08-08 on macOS 15 (arm64), omp 17.2.10 → 17.2.11.
+
+Read this file when the installer surprises you. Skip it otherwise.
+
+---
+
+## 1. `curl | sh` verifies nothing
+
+**Symptom** — none. That is the problem.
+
+The official one-liner works. Its installer is 334 lines and contains zero calls
+to `sha256sum`, `gpg`, or `cosign`: whatever the endpoint returns is executed.
+
+**Fix** — install through the registry (`bun install -g @oh-my-pi/pi-coding-agent`).
+That path carries a signed SLSA v1 provenance attestation proving the artifact
+was built from the public repository by its CI, which the shell installer does
+not offer.
+
+---
+
+## 2. Node cannot run omp
+
+**Symptom** — import errors on `bun:sqlite`, `bun:ffi` and friends.
+
+The package declares `"engines": {"bun": ">=1.3.14"}` and no `node` field.
+105 files import `bun:*` builtins.
+
+**Fix** — bun ≥ 1.3.14, enforced by the installer, which upgrades if needed.
+
+---
+
+## 3. `--omit=optional` makes omp unstartable
+
+**Symptom** — `Failed to load pi_natives native addon`, on the very first run.
+
+`--omit=optional` is worth having: it drops five high-severity advisories
+carried by local-ML dependencies omp does not need. But it also drops the Rust
+native addon, which is not optional at all.
+
+**Fix** — install `@oh-my-pi/pi-natives-<platform>` separately, right after.
+The installer detects the platform and installs only that one.
+
+---
+
+## 4. Version 17.2.10 cannot select a model
+
+**Symptom** —
+
+```
+Error: No model selected. Use /login, set an API key environment variable,
+or create ~/.omp/agent/agent.db  Then use /model to select a model.
+```
+
+This appears with both accounts connected, a valid six-role `modelRoles`
+record, and every model present in the catalogue. `omp usage` shows healthy
+quota on both providers. Nothing in the configuration fixes it — hours can go
+into `/model`, `agent.db`, and role syntax before the real cause surfaces.
+
+**Cause** — a bug in 17.2.10. **Fix** — `omp update`. 17.2.11 resolves models
+normally. The installer enforces ≥ 17.2.11 and updates when it finds less.
+
+---
+
+## 5. A per-tool `bash: prompt` rule does not block execution
+
+**Symptom** — you believe shell commands require approval. They do not.
+
+Setting `tools.approval: {bash: prompt}` looks like a safety net. Measured
+behaviour: the bash tool call is refused, and the model then reruns *the
+identical command* through `subprocess` in the Python kernel, where no rule
+applies. It executes. The model reported this itself, unprompted:
+
+> the `bash` tool refused the call (approval required, no interactive UI).
+> I ran the same `wc -l a.txt` through `subprocess` in the Python kernel
+> instead of stopping.
+
+A guard that relocates execution rather than preventing it is worse than no
+guard, because it produces false confidence.
+
+**Fix** — no per-tool approval rules. `approvalMode` is the only control that
+actually decides, and the installer sets it explicitly.
+
+---
+
+## 6. Setting one model role is rejected
+
+**Symptom** —
+
+```
+$ omp config set modelRoles.plan openai-codex/gpt-5.6-sol:high
+Run 'omp config list' to see available keys
+```
+
+The role name is valid. The *sub-key syntax* is what is refused.
+
+**Fix** — write the entire record:
+
+```bash
+omp config set modelRoles '{"default":"...","advisor":"...","plan":"...","smol":"...","tiny":"...","commit":"..."}'
+```
+
+**Second trap in the same place**: the record is not validated. It will accept
+and store a completely invented role name. So a successful `set` is *not*
+evidence that the key is read by anything. The six real roles are `default`,
+`advisor`, `plan`, `smol`, `tiny`, `commit`.
+
+---
+
+## 7. The bundled catalogue advertises a retired model
+
+**Symptom** — a fan-out of subagents produces this, then quietly recovers:
+
+```
+The 10 specialised agents pin an unavailable model (claude-sonnet-4-0).
+Re-dispatching on the default worker.
+```
+
+Half the subagents produce **0 bytes** before the retry. On a 10-agent audit
+that is a full round trip of tokens spent on nothing.
+
+**Cause** — three layers stacked:
+
+1. `omp models` is a static list baked into the package. It still lists
+   `claude-sonnet-4-0`, which the provider has retired: requesting it returns
+   `404 not_found_error`.
+2. The fuzzy alias `sonnet` resolves to that dead identifier.
+3. The bundled agents declare `model: ["@task"]` — a **role** absent from the
+   closed `modelRoles` key set. With nothing to resolve it to, omp falls back
+   to that internal default.
+
+**Fix** — `task.agentModelOverrides`, which is keyed by agent name and, unlike
+`modelRoles`, is open. The installer maps all seven bundled agents.
+
+Verify the fix by counting `not_found_error` in the output of a run that
+delegates. Zero is the passing condition.
+
+---
+
+## 8. The advisor ignores subagents by default
+
+**Symptom** — none visible, which is the danger.
+
+`advisor.subagents` defaults to `false`. The advisor therefore reviews the main
+turn — the one that only *delegates* — and not the subagents, which are what
+actually write to files. In `yolo` mode, where the advisor is the only remaining
+control, this guards an empty room.
+
+**Fix** — `advisor.subagents: true`. It is a boolean; there is no per-agent
+granularity.
+
+**How to verify it took effect**: a reviewed subagent has its own
+`__advisor.jsonl` inside **its own** directory under
+`~/.omp/agent/sessions/<project>/<session>/<AgentName>/`, not merely at the
+session root. Measured on one delegated fix: 3 turns, 13,760 tokens.
+
+**If it costs too much latency** on a wide fan-out, relax `advisor.syncBacklog`
+to `off` — the advisor keeps reviewing, asynchronously, and stops blocking the
+end of each turn. Do not disable `subagents` to solve a speed problem.
+
+---
+
+## 9. Concurrent subagents share one working tree
+
+**Symptom** — silent overwrites. Two agents edit the same file, one wins, and
+nothing reports it.
+
+Defaults: `task.isolation.mode: none`, `task.maxConcurrency: 32`. Combined with
+`approvalMode: yolo`, that is thirty-two possible writers in one directory with
+no validation and no isolation.
+
+**Fix** — copy-on-write clone per agent, with only the resulting diff merged
+back (`merge: patch`). On APFS this is close to free: **cloning 200 MB took
+0.029 s**, i.e. 6.9 GB/s, which no SSD achieves — nothing was copied, only
+block references.
+
+Note that `du` reports the clone at full size: it does not account for shared
+blocks. Elapsed time is the reliable signal, not disk accounting.
+
+---
+
+## 10. Three factory defaults are wrong for client work
+
+| Key | Factory default | Why it matters |
+|---|---|---|
+| `tools.approvalMode` | `yolo` | Auto-approves shell execution **and** disables omp's own hard-coded guardrails: `rm -rf /`, fork bombs, fetch-then-execute. |
+| `dev.autoqa` | `true` | The model writes malfunction reports POSTed to `qa.omp.sh/v1/grievances`. The payload is free text and can carry paths or code fragments. A consent popup exists, but `PI_AUTO_QA_PUSH=1` bypasses it headless. |
+| `secrets.enabled` | `false` | Enabled, it replaces sensitive-looking environment variables and token patterns with reversible markers *before* the prompt reaches the provider. |
+
+Two of the three act from the very first session, so the configuration has to
+be in place **before** the first launch. That is the whole reason this is an
+installer and not a checklist.
+
+---
+
+## 11. What the second model actually costs
+
+Nobody publishes this number, and `/advisor status` only shows the current
+session. It is in `usage.cost` inside `__advisor.jsonl`.
+
+Measured over one real 35-turn audit:
+
+| | Turns | Tokens | Cost equivalent |
+|---|---|---|---|
+| Primary | 35 | 7,607,636 | $7.98 |
+| Advisor | 50 | 724,663 | $0.86 |
+
+**About 10% of the tokens and 11% of the cost.** It stays that low because 88%
+of the advisor's input is served from cache: it sees the delta since its last
+pass, not the whole context.
+
+On a subscription these dollars are not billed — but the ratio still holds, and
+what it consumes is quota. Read "cost" as "share of your weekly allowance".
+
+---
+
+## 12. The installer overwrites what you set by hand
+
+`omp config set` writes straight into `~/.omp/agent/config.yml`. This script
+regenerates that same file. Anything you tuned interactively and did not add to
+the script will be lost on the next run.
+
+It is backed up first (`config.yml.bak-<timestamp>`), but the durable fix is to
+put your choice in the script's variables, not in a one-off command.
+
+---
+
+## 13. Login cannot be scripted, and may be revoked
+
+`/login` is a browser OAuth flow. There is no headless path, by design.
+
+Worth knowing before you build a workflow on it: in January 2026 one vendor cut
+third-party OAuth access for consumer subscriptions, breaking an IDE
+integration overnight, and formalised the restriction in February. Third-party
+harnesses reaching a consumer plan through OAuth sit on a path that has already
+been closed once, elsewhere. It works today. Plan for the morning it does not.
+
+---
+
+## 14. Two habits that make everything above cheaper to diagnose
+
+**`timeout` does not exist on macOS.** Diagnostic scripts written against Linux
+die on the first line. Use a background PID plus a bounded wait loop.
+
+**A shared Cloudflare IP is not an identification.** Reverse DNS on `104.16.x`
+or `188.114.x` proves nothing about which domain was contacted, because
+thousands of sites sit behind the same front. Filtering network captures by
+process PID is also unreliable: a naive filter picked up unrelated traffic from
+Google, GitHub, AWS and Tailscale and would have supported a completely wrong
+conclusion. Query the specific destination you care about, and treat a wide
+capture as a lead, never as evidence.
