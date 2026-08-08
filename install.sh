@@ -164,6 +164,18 @@ marketplace:
 startup:
   checkUpdate: true
 
+retry:
+  # FACTORY DEFAULTS make running out of quota completely silent: no allowance is
+  # watched (usageAwareFallback false), there is nowhere to fall back to
+  # (fallbackChains empty), and the reserve policy is inert without the first.
+  # The advisor's calls simply start failing while the primary keeps working, so
+  # the run looks healthy. In yolo mode that means running unsupervised while
+  # believing you are not. fail-closed stops loudly instead; use "confirm" if you
+  # would rather be asked.
+  usageAwareFallback: true
+  usageReservePct: 10
+  usageReservePolicy: fail-closed
+
 task:
   isolation:
     # Without this, every concurrent subagent writes into the same directory.
@@ -220,9 +232,16 @@ advisor:
   enabled: true
   syncBacklog: "1"   # end of turn, bounded 30s wait. "off" = fully async.
   immuneTurns: 3     # after an accepted interruption, 3 turns in remark-only mode
-  # Subagents are what actually write to files; the main turn only delegates.
-  # Reviewing the delegator and not the writers guards an empty room.
-  subagents: true
+  # FALSE, and this is the expensive lesson. Subagents are what actually write to
+  # files, so reviewing only the main turn guards a room where nothing happens —
+  # the argument for turning this on is sound. The cost is not: the advisor then
+  # runs inside EVERY subagent, so a 10-agent fan-out multiplies it by ten.
+  # Measured 2026-08-08 on comparable sessions: 3.6M advisor tokens with this
+  # off, 161.8M with it on plus a raised effort level. A weekly subscription
+  # quota was exhausted in half a day. Turn it on only after measuring one full
+  # session at your own fan-out width, and never at the same time as an effort
+  # increase — you will not know which one cost you.
+  subagents: false
 YAML
 fi
 

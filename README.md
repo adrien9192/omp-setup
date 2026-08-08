@@ -7,8 +7,8 @@ one's work while it codes.
 > **This installs omp in `yolo` mode: nothing you ask it to do gets validated
 > first.** That is deliberate — approving every shell command is what makes
 > people abandon the tool, and it is what omp ships by default anyway. What
-> contains it here is subagent isolation plus a reviewing model, both set up for
-> you. Run `OMP_APPROVAL_MODE=write bash install.sh` if you want to be prompted
+> contains it here is subagent isolation: delegated work happens in a throwaway
+> clone. Run `OMP_APPROVAL_MODE=write bash install.sh` if you want to be prompted
 > before shell commands. Details below.
 
 The factory defaults are not the ones you want on a client repository. Three of
@@ -75,10 +75,11 @@ tokens if it does not share the first one's blind spots.
 | `dev.autoqa` | `true` | `false` | Posts model-written free-text reports to `qa.omp.sh`; the payload can carry paths and code fragments. |
 | `secrets.enabled` | `false` | `true` | Masks sensitive env vars and token patterns before the prompt reaches the provider. |
 | `advisor.enabled` | `false` | `true` | The feature with no equivalent elsewhere: a second model reads the first one's diffs and reasoning as it works, and can interrupt. |
-| `advisor.subagents` | `false` | `true` | Subagents are what write to files; the main turn only delegates. Reviewing the delegator alone guards an empty room. |
+| `advisor.subagents` | `false` | `false` | Kept off. Turning it on runs the advisor inside every subagent: measured 3.6M advisor tokens off vs 161.8M on, a weekly subscription gone in half a day. See [PITFALLS #8](PITFALLS.md). |
 | `task.isolation.mode` | `none` | `apfs` / `auto` | Otherwise up to 32 concurrent agents write into one directory and silently overwrite each other. |
 | `task.agentModelOverrides` | empty | 7 agents mapped | Without it every subagent 404s on a retired model and burns a full round trip before recovering. |
 | `marketplace.autoUpdate` | — | `notify` | Plugin code runs in-process, with no sandbox. |
+| `retry.usageAwareFallback` | `false` | `true` | Without it, running out of quota is silent: the advisor dies, the run continues, and you believe you are still supervised. |
 
 No per-tool `approval` rules, deliberately. A `{bash: prompt}` rule does not
 block execution — measured, it relocates it to the Python kernel, which
@@ -107,9 +108,10 @@ Approving every shell command is the friction that makes people stop using an
 agent, so the trade is made once, up front, rather than fifty times a day.
 
 Know exactly what it trades. Delegated subagents are contained: they work in a
-copy-on-write clone, only their diff comes back, and a second model reads those
-diffs as they are produced. **The main turn has neither.** Its shell commands
-run against your real working tree with omp's hard-coded guardrails bypassed.
+copy-on-write clone and only their diff comes back. **The main turn is not
+isolated** — its shell commands run against your real working tree with omp's
+hard-coded guardrails bypassed. The advisor reviews that main turn, and only it:
+extending it to subagents is what costs a weekly quota (PITFALLS #8).
 
 So: keep your work committed, and prefer `OMP_APPROVAL_MODE=write` on a
 repository whose loss would actually hurt. Switching later needs no reinstall:
@@ -143,6 +145,12 @@ Note the honest part: on that particular audit the advisor raised **zero**
 objections across 48 review turns. That can mean the work was sound, or that it
 did not bite. One run cannot tell you which.
 
+**And note the trap in that number.** It was measured with `advisor.subagents`
+off. Using it to justify turning that setting on is reasoning from a measurement
+the change invalidates — on 2026-08-08 that exact mistake turned 3.6M advisor
+tokens into 161.8M and exhausted a weekly subscription in half a day. Change one
+multiplier at a time, and measure a full session between each.
+
 ---
 
 ## Verifying it actually worked
@@ -150,10 +158,11 @@ did not bite. One run cannot tell you which.
 The installer's verification block must print no `FAIL`. Beyond that, two
 checks worth doing yourself on the first real task:
 
-**The advisor is reviewing subagents** when a `__advisor.jsonl` file appears
-inside a subagent's **own** directory under
-`~/.omp/agent/sessions/<project>/<session>/<AgentName>/`, not merely at the
-session root.
+**The advisor is running** when `__advisor.jsonl` appears at the root of the
+session directory under `~/.omp/agent/sessions/<project>/<session>/`, with a
+non-zero turn count. If the same file also appears inside a **subagent's own**
+folder, `advisor.subagents` is on — check your token counts before running
+anything wide.
 
 **Model resolution is clean** when a run that delegates produces zero
 `not_found_error` in its output.

@@ -140,26 +140,46 @@ delegates. Zero is the passing condition.
 
 ---
 
-## 8. The advisor ignores subagents by default
+## 8. `advisor.subagents: true` will burn a weekly quota in half a day
 
-**Symptom** — none visible, which is the danger.
+**Symptom** — the advisor's provider hits 100% of its weekly allowance within
+hours, and nothing warns you (see pitfall #15 for why nothing warns you).
 
-`advisor.subagents` defaults to `false`. The advisor therefore reviews the main
-turn — the one that only *delegates* — and not the subagents, which are what
-actually write to files. In `yolo` mode, where the advisor is the only remaining
-control, this guards an empty room.
+The argument for turning it on is sound: `advisor.subagents` defaults to
+`false`, so the advisor reviews the main turn — the one that only *delegates* —
+and not the subagents, which are what actually write to files. In `yolo` mode
+that guards a room where nothing happens.
 
-**Fix** — `advisor.subagents: true`. It is a boolean; there is no per-agent
-granularity.
+**The cost is what the argument omits.** Turned on, the advisor runs inside
+*every* subagent. A 10-agent fan-out multiplies it by ten, and each subagent
+starts with a cold cache, so the 88% cache hit rate that made the advisor cheap
+does not apply to them.
 
-**How to verify it took effect**: a reviewed subagent has its own
-`__advisor.jsonl` inside **its own** directory under
+**Measured 2026-08-08**, two comparable sessions on the same machine:
+
+| Session | `subagents` | Advisor turns | Advisor tokens |
+|---|---|---|---|
+| 07-39 UTC | `false` | 105 | 3,619,303 |
+| 08-44 UTC | `true` | 985 | **161,815,140** |
+
+**45×.** Total for the day: 1,967 advisor turns, 221,137,360 tokens, a weekly
+subscription exhausted before dinner.
+
+Three changes were made within the same hour — `subagents` on, advisor effort
+raised, and the primary's effort raised — so no single one can be blamed with
+certainty. That is itself the lesson: **change one multiplier at a time, and
+measure a full session between each.** The 10-11% figure in pitfall #11 was
+taken with `subagents: false`; using it to justify turning `subagents` on is
+reasoning from a measurement the change invalidates.
+
+**If you turn it on anyway**, verify it took effect: a reviewed subagent has its
+own `__advisor.jsonl` inside **its own** directory under
 `~/.omp/agent/sessions/<project>/<session>/<AgentName>/`, not merely at the
-session root. Measured on one delegated fix: 3 turns, 13,760 tokens.
+session root. Then read the token counts before running anything wide.
 
-**If it costs too much latency** on a wide fan-out, relax `advisor.syncBacklog`
-to `off` — the advisor keeps reviewing, asynchronously, and stops blocking the
-end of each turn. Do not disable `subagents` to solve a speed problem.
+**Latency, separately**: if `syncBacklog: "1"` makes wide fan-outs feel slow,
+relax it to `off` — the advisor keeps reviewing, asynchronously. That is a speed
+knob, not a cost knob.
 
 ---
 
@@ -240,7 +260,47 @@ been closed once, elsewhere. It works today. Plan for the morning it does not.
 
 ---
 
-## 14. Two habits that make everything above cheaper to diagnose
+## 14. Running out of quota is silent, and the advisor dies without telling you
+
+**Symptom** — none. You keep working. The second model stopped reviewing hours
+ago and nothing said so.
+
+Three factory defaults produce this together:
+
+```
+retry.usageAwareFallback = false   no quota is watched
+retry.fallbackChains     = {}      nowhere to fall back to
+retry.usageReservePolicy = confirm inert without the first
+```
+
+`retry.modelFallback` is `true`, but it fires on an **error**, not on a
+allowance running down — and with an empty `fallbackChains` it has no
+destination anyway. So the advisor's calls start failing, the primary keeps
+working on its own provider, and the run continues looking healthy.
+
+The trace exists, but only if you go looking: `usage_limit` appears inside the
+session `__advisor.jsonl` files. Nothing surfaces it.
+
+**Why this is worse than a wasted quota.** In `yolo` mode the advisor is the
+only remaining control. When it dies silently you are not running "with a
+reviewer that had a problem" — you are running unsupervised, and you believe you
+are not.
+
+**Fix**, applied by this installer:
+
+```yaml
+retry:
+  usageAwareFallback: true
+  usageReservePolicy: fail-closed
+```
+
+`fail-closed` means a run stops visibly rather than continuing quietly past the
+reserve. After half a day lost to silence, a loud failure is the cheaper
+outcome. Set it to `confirm` if you would rather be asked.
+
+---
+
+## 15. Two habits that make everything above cheaper to diagnose
 
 **`timeout` does not exist on macOS.** Diagnostic scripts written against Linux
 die on the first line. Use a background PID plus a bounded wait loop.
