@@ -15,15 +15,28 @@
 #   ompw "fix the auth bug"   # same, with an initial prompt
 #
 # Install: source this file from your shell profile, or copy the function.
-set -euo pipefail
+#
+# ── WHY THERE IS NO `set -euo pipefail` AT THE TOP OF THIS FILE ──────────────
+# There was one, from 2026-08-08 17:35 to 2026-08-09 09:20, and it made every
+# new Terminal.app window die on open. A sourced file does not get its own shell:
+# `set -e` and `set -u` land on the INTERACTIVE shell and stay there.
+#   /etc/bashrc_Apple_Terminal:126 reads `[ -n "$HISTTIMEFORMAT" ]` unguarded, as
+#   any interactive-shell code reasonably may. With nounset that read is fatal;
+#   with errexit the shell then exits. Result: "-bash: HISTTIMEFORMAT: unbound
+#   variable" followed by the window closing, with no way to type anything.
+# The install line and the code contradicted each other: the header says "source
+# this file", the body assumed it would be its own process.
+# Strictness now applies only on the path where this file IS its own process —
+# the standalone branch at the bottom. Inside the function, every command that
+# could fail is guarded explicitly, which is what `set -e` was doing implicitly.
 
 ompw() {
-  local repo branch slug wt base
+  local repo branch slug wt base reply
   repo="$(git rev-parse --show-toplevel 2>/dev/null)" || {
     echo "ompw: not inside a git repository. Plain 'omp' is the honest choice here." >&2
     return 1
   }
-  base="$(git -C "$repo" rev-parse --abbrev-ref HEAD)"
+  base="$(git -C "$repo" rev-parse --abbrev-ref HEAD)" || return 1
   slug="omp-$(date +%Y%m%d-%H%M%S)"
   wt="${OMPW_ROOT:-$HOME/.omp/worktrees}/$(basename "$repo")-$slug"
 
@@ -35,12 +48,17 @@ ompw() {
     echo "      the last commit, so the agent will NOT see them. Commit first if"
     echo "      they matter."
     printf "      Continue anyway? [y/N] "
-    read -r reply
+    read -r reply || return 1
     [ "$reply" = "y" ] || [ "$reply" = "Y" ] || return 1
   fi
 
-  mkdir -p "$(dirname "$wt")"
-  git -C "$repo" worktree add -b "$slug" "$wt" "$base" >/dev/null
+  mkdir -p "$(dirname "$wt")" || return 1
+  # Explicit guard: this was covered by `set -e` before, and losing it silently
+  # would leave the caller in a worktree that does not exist.
+  git -C "$repo" worktree add -b "$slug" "$wt" "$base" >/dev/null || {
+    echo "ompw: could not create the worktree. Nothing was changed." >&2
+    return 1
+  }
   echo "ompw: $slug  ←  $base"
   echo "      $wt"
 
@@ -54,7 +72,7 @@ ompw() {
     return 0
   fi
 
-  git -C "$wt" add -A
+  git -C "$wt" add -A || return 1
   git -C "$wt" -c user.name="${GIT_AUTHOR_NAME:-$(git config user.name)}" \
                -c user.email="${GIT_AUTHOR_EMAIL:-$(git config user.email)}" \
                commit -qm "ompw: session $slug" || true
@@ -63,7 +81,7 @@ ompw() {
   git -C "$repo" diff --stat "$base".."$slug"
   echo
   printf "ompw: merge %s into %s? [y/N] " "$slug" "$base"
-  read -r reply
+  read -r reply || return 1
   if [ "$reply" = "y" ] || [ "$reply" = "Y" ]; then
     git -C "$repo" merge --no-ff "$slug" -m "ompw: merge $slug"
     git -C "$repo" worktree remove --force "$wt" >/dev/null
@@ -77,4 +95,10 @@ ompw() {
 }
 
 # Allow both `source ompw.sh` and `bash ompw.sh <args>`.
-if [ "${BASH_SOURCE[0]}" = "${0}" ]; then ompw "$@"; fi
+# `${BASH_SOURCE[0]:-}` and not `${BASH_SOURCE[0]}` : zsh has no BASH_SOURCE, and
+# this file is sourced from .zshrc too. Under nounset that bare read was itself
+# fatal — the same defect, one line lower.
+if [ "${BASH_SOURCE[0]:-}" = "${0:-}" ] && [ -n "${BASH_SOURCE[0]:-}" ]; then
+  set -euo pipefail
+  ompw "$@"
+fi
