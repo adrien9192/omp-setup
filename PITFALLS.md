@@ -60,8 +60,8 @@ record, and every model present in the catalogue. `omp usage` shows healthy
 quota on both providers. Nothing in the configuration fixes it — hours can go
 into `/model`, `agent.db`, and role syntax before the real cause surfaces.
 
-**Cause** — a bug in 17.2.10. **Fix** — `omp update`. 17.2.11 resolves models
-normally. The installer enforces ≥ 17.2.11 and updates when it finds less.
+**Cause** — a bug in 17.2.10. **Fix** — `omp update`. 17.2.11 first resolved
+models normally; the current template enforces the fully validated 17.2.15.
 
 ---
 
@@ -105,38 +105,32 @@ omp config set modelRoles '{"default":"...","advisor":"...","plan":"...","smol":
 
 **Second trap in the same place**: the record is not validated. It will accept
 and store a completely invented role name. So a successful `set` is *not*
-evidence that the key is read by anything. The six real roles are `default`,
-`advisor`, `plan`, `smol`, `tiny`, `commit`.
+evidence that the key is read by anything. In omp 17.2.15 the stock roles are
+`default`, `smol`, `slow`, `vision`, `plan`, `designer`, `commit`, `tiny`,
+`task`, and `advisor`.
 
 ---
 
-## 7. The bundled catalogue advertises a retired model
+## 7. Old agent mappings can pin retired models
 
-**Symptom** — a fan-out of subagents produces this, then quietly recovers:
+**Historical symptom** — a fan-out of subagents produced this, then quietly
+recovered:
 
 ```
-The 10 specialised agents pin an unavailable model (claude-sonnet-4-0).
+The specialised agents pin an unavailable model.
 Re-dispatching on the default worker.
 ```
 
-Half the subagents produce **0 bytes** before the retry. On a 10-agent audit
-that is a full round trip of tokens spent on nothing.
+Half the subagents could produce **0 bytes** before the retry, spending a full
+round trip on nothing.
 
-**Cause** — three layers stacked:
+Older omp releases needed `task.agentModelOverrides` because bundled agents used
+an unresolved `@task` role. Omp 17.2.15 has a stock `task` role. This installer
+maps that role, plus every other stock role, through `modelRoles`; it does not
+carry the obsolete per-agent override table.
 
-1. `omp models` is a static list baked into the package. It still lists
-   `claude-sonnet-4-0`, which the provider has retired: requesting it returns
-   `404 not_found_error`.
-2. The fuzzy alias `sonnet` resolves to that dead identifier.
-3. The bundled agents declare `model: ["@task"]` — a **role** absent from the
-   closed `modelRoles` key set. With nothing to resolve it to, omp falls back
-   to that internal default.
-
-**Fix** — `task.agentModelOverrides`, which is keyed by agent name and, unlike
-`modelRoles`, is open. The installer maps all seven bundled agents.
-
-Verify the fix by counting `not_found_error` in the output of a run that
-delegates. Zero is the passing condition.
+If this symptom returns, verify the installed role set and count
+`not_found_error` in a delegated run. Zero is the passing condition.
 
 ---
 
@@ -237,14 +231,16 @@ what it consumes is quota. Read "cost" as "share of your weekly allowance".
 
 ---
 
-## 12. The installer overwrites what you set by hand
+## 12. A generic installer must not overwrite a tuned machine
 
-`omp config set` writes straight into `~/.omp/agent/config.yml`. This script
-regenerates that same file. Anything you tuned interactively and did not add to
-the script will be lost on the next run.
+`omp config set` writes straight into `~/.omp/agent/config.yml`. Regenerating
+that file from a public template silently replaces machine-specific routing,
+fallbacks, skills, and agent policy.
 
-It is backed up first (`config.yml.bak-<timestamp>`), but the durable fix is to
-put your choice in the script's variables, not in a one-off command.
+**Fix** — `install.sh` creates the starter configuration only when the file is
+absent. On rerun it updates the runtime and `ompw`, but preserves the existing
+configuration byte-for-byte. A machine-specific repository remains the source
+of truth.
 
 ---
 
@@ -291,12 +287,14 @@ are not.
 ```yaml
 retry:
   usageAwareFallback: true
+  usageReservePct: 10
   usageReservePolicy: fail-closed
 ```
 
-`fail-closed` means a run stops visibly rather than continuing quietly past the
-reserve. After half a day lost to silence, a loud failure is the cheaper
-outcome. Set it to `confirm` if you would rather be asked.
+The reserve stops the run visibly before quota reaches zero. The public template
+does not invent provider-specific fallback chains before the user has
+authenticated those providers. On an existing machine, keep its routing in the
+machine-specific source of truth; this installer will not replace it.
 
 ---
 

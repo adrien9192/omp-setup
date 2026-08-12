@@ -1,23 +1,20 @@
 # omp-setup
 
-Install [omp](https://omp.sh) (Oh My Pi) with a configuration that works on the
-first try, and with a second model from a different vendor reviewing the first
-one's work while it codes.
+Install [omp](https://omp.sh) (Oh My Pi) with a measured starter configuration
+and a second model from a different vendor reviewing the first one's work.
 
-> **This installs omp in `yolo` mode: nothing you ask it to do gets validated
-> first.** That is deliberate — approving every shell command is what makes
-> people abandon the tool, and it is what omp ships by default anyway. What
-> contains it: delegated work runs in a throwaway clone, and `ompw` (shipped
-> here) puts the main turn in a disposable git worktree too. Run
-> `OMP_APPROVAL_MODE=write bash install.sh` if you want to be prompted before
-> shell commands instead. Details below.
+On a fresh machine, the installer writes `~/.omp/agent/config.yml`. On a machine
+that already has that file, it leaves the configuration byte-for-byte intact:
+the repository is a generic template, never a second source of truth for an
+existing harness.
 
-The factory defaults are not the ones you want on a client repository. Three of
-them act from the very first session, so the configuration has to be in place
-**before** you launch. That is why this is an installer and not a checklist.
+> **The fresh-machine template uses `yolo` mode: nothing you ask it to do gets
+> validated first.** Delegated work runs in an isolated clone, and `ompw`
+> (shipped here) puts the main turn in a disposable git worktree. Run
+> `OMP_APPROVAL_MODE=write bash install.sh` for shell-command prompts instead.
 
-Everything it does differently from the official install is there because the
-default was measured failing. Each measurement is in [PITFALLS.md](PITFALLS.md).
+The non-default choices below come from measured failures documented in
+[PITFALLS.md](PITFALLS.md).
 
 ---
 
@@ -31,10 +28,10 @@ Install omp using https://github.com/adrien9192/omp-setup
 Steps, in order:
 1. git clone https://github.com/adrien9192/omp-setup /tmp/omp-setup
 2. Read /tmp/omp-setup/install.sh in full before running it. It installs a
-   package globally and writes ~/.omp/agent/config.yml.
+   package globally. It creates ~/.omp/agent/config.yml only when none exists.
 3. Run: bash /tmp/omp-setup/install.sh
-4. Report exactly what the verification block printed. Every line must pass.
-   If any line says FAIL, stop and show me the output. Do not work around it.
+4. Report the verification block. Existing configurations must say they were
+   preserved; fresh configurations must contain no FAIL line.
 
 Then tell me the two /login commands it printed at the end. Do not try to run
 them yourself: OAuth is a browser flow and cannot be scripted.
@@ -49,7 +46,7 @@ Or, without an agent:
 git clone https://github.com/adrien9192/omp-setup && bash omp-setup/install.sh
 ```
 
-Re-running it is safe. Any existing config is backed up first.
+Re-running it is safe: an existing configuration is preserved, not regenerated.
 
 ---
 
@@ -59,8 +56,8 @@ Login is a browser OAuth flow. Nothing can script it.
 
 ```bash
 omp
-/login anthropic       # the doer
-/login openai-codex    # the reviewer
+/login openai-codex    # the doer
+/login anthropic       # the reviewer
 ```
 
 Two vendors on purpose. A second model reviewing the first is only worth its
@@ -78,9 +75,9 @@ tokens if it does not share the first one's blind spots.
 | `advisor.enabled` | `false` | `true` | The feature with no equivalent elsewhere: a second model reads the first one's diffs and reasoning as it works, and can interrupt. |
 | `advisor.subagents` | `false` | `false` | Kept off. Turning it on runs the advisor inside every subagent: measured 3.6M advisor tokens off vs 161.8M on, a weekly subscription gone in half a day. See [PITFALLS #8](PITFALLS.md). |
 | `task.isolation.mode` | `none` | `apfs` / `auto` | Otherwise up to 32 concurrent agents write into one directory and silently overwrite each other. |
-| `task.agentModelOverrides` | empty | 7 agents mapped | Without it every subagent 404s on a retired model and burns a full round trip before recovering. |
+| `modelRoles` | built-in defaults | 10 current roles | Map every stock role explicitly: doer/plan, advisor, task/designer/slow/vision, and cheap mechanical roles. |
 | `marketplace.autoUpdate` | — | `notify` | Plugin code runs in-process, with no sandbox. |
-| `retry.usageAwareFallback` | `false` | `true` | Without it, running out of quota is silent: the advisor dies, the run continues, and you believe you are still supervised. |
+| quota reserve | disabled | `10%`, `fail-closed` | Stop visibly before a provider is exhausted; a generic template cannot safely invent cross-provider fallback chains before login. |
 | main-turn isolation | none, and no setting for it | `ompw` | A shell function shipped here: worktree, branch, diff on exit, merge on your word. |
 
 No per-tool `approval` rules, deliberately. A `{bash: prompt}` rule does not
@@ -99,10 +96,11 @@ OMP_APPROVAL_MODE=write OMP_EFFORT=max bash install.sh
 
 | Variable | Default | Notes |
 |---|---|---|
-| `OMP_DOER` | `anthropic/claude-opus-5` | The model that does the work. |
-| `OMP_ADVISOR` | `openai-codex/gpt-5.6-sol` | The reviewer. Set empty to run single-model. |
-| `OMP_CHEAP` | `anthropic/claude-haiku-4-5` | Commits, summaries, read-only exploration. |
-| `OMP_EFFORT` | `high` | `low`…`max`. Applies to every turn, including trivial ones — it burns subscription quota fast. |
+| `OMP_DOER` | `openai-codex/gpt-5.6-sol` | Top-level and planning model. |
+| `OMP_ADVISOR` | `anthropic/claude-opus-5` | Cross-vendor reviewer. Set empty to disable it. |
+| `OMP_TASK` | `anthropic/claude-sonnet-5` | General delegated work, design, and slow role. |
+| `OMP_CHEAP` | `anthropic/claude-haiku-4-5` | Commits, summaries, and mechanical work. |
+| `OMP_EFFORT` | `high` | `low`…`max`; the template caps delegated effort at `high`. |
 | `OMP_APPROVAL_MODE` | `yolo` | `always-ask`, `write`, or `yolo`. |
 
 **On `yolo`, which is the default here:** it is a real choice, not an oversight.
